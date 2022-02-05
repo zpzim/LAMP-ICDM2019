@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from scipy.stats import zscore
-from keras.utils import Sequence
+from tensorflow.keras.utils import Sequence
 from numpy.lib.stride_tricks import as_strided
 
 class MPTimeseriesGenerator(Sequence):

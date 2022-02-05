@@ -1,22 +1,20 @@
-import numpy as np
+import datetime
 import math
+import os
+import sys
+
+import numpy as np
 import pandas as pd
-import tensorflow as tf
-import sys,os
-from TimeSeriesGeneratorAdapt import MPTimeseriesGenerator
-import keras
-from scipy.stats import zscore
 import scipy.io as sio
-from keras.utils import multi_gpu_model
+import tensorflow as tf
+
+from TimeSeriesGeneratorAdapt import MPTimeseriesGenerator
 from tensorboard_callbacks import LRTensorBoard
 from models import build_resnet
-import datetime
-import keras.backend as K
 
 #Fix random seed so that we can reproduce results
 np.random.seed(813306)
-from tensorflow import set_random_seed
-set_random_seed(5944)
+tf.random.set_seed(5944)
 
 def get_flops(model):
     run_meta = tf.RunMetadata()
@@ -29,7 +27,7 @@ def get_flops(model):
     return flops.total_float_ops  # Prints the "flops" of the model.
 
 if len(sys.argv) < 4:
-  print('Usage: LAMP.py <mp_window_size> <root_data_dir> <root_logging_dir> <pretrained_weights_file (optional when training)> <initial_epoch (optional, default=0)>')
+  print('Usage: LAMP.py <mp_window_size> <root_data_path> <root_logging_path> <pretrained_weights_file (optional when training)> <initial_epoch (optional, default=0)>')
   exit(1)
 
 # Flags indicating whether to train and/or predict
@@ -54,7 +52,8 @@ input_width = matrix_profile_window
 # Where lookbehind is the number of historical subsequences to extract, lookahead is the number of future subsequences to extract, and num_outputs
 # is the number of outputs we predict for each input, the outputs are the matrix profile values for consecutive subsequences starting with the 'current'
 # subsequence
-sample_rate = 20
+# By default we do not do lookahead or lookbehind
+sample_rate = 0
 lookbehind_seconds = 0
 lookahead_seconds = 0
 subsequence_stride = 256
@@ -79,30 +78,19 @@ loss_function='mse'
 batch_size = 32
 nb_epochs = 30
 init_epoch = 0
+optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr, epsilon=1e-4)
 
 # Whether we shuffle the training data
 shuffle = True
-
-# Whether an RNN model is treated as stateful
-stateful_rnn = False
-optimizer = keras.optimizers.get(optimizer_id)
-conf = optimizer.get_config()
-conf['lr'] = initial_lr
-conf['epsilon'] = 1e-4
-
-
-
 
 root_data_path = sys.argv[2]
 root_logging_path = sys.argv[3]
 
 all_data = sio.loadmat(root_data_path)
 
-
-
 if training:
   dataset_name = os.path.split(root_data_path)[-1]
-  logging_filename = 'dataset={}_width={}_optimizer={}_initlr={}_batchsz={}_stride={}_shuffle={}_lookbehind={}_lookahead={}_channelstride={}_outputs={}_stateful={}_weight={}_lowthresh={}_highthresh={}_started={}'.format(dataset_name, input_width, optimizer_id, initial_lr, batch_size, subsequence_stride, shuffle, lookbehind, lookahead, channel_stride, num_outputs, stateful_rnn, high_weight, low_thresh, high_thresh, str(datetime.datetime.now()).replace(' ', '-'))
+  logging_filename = 'dataset={}_width={}_optimizer={}_initlr={}_batchsz={}_stride={}_shuffle={}_lookbehind={}_lookahead={}_channelstride={}_outputs={}_weight={}_lowthresh={}_highthresh={}_started={}'.format(dataset_name, input_width, optimizer_id, initial_lr, batch_size, subsequence_stride, shuffle, lookbehind, lookahead, channel_stride, num_outputs, high_weight, low_thresh, high_thresh, str(datetime.datetime.now()).replace(' ', '-'))
   model_path = os.path.join(root_logging_path, 'models', logging_filename)
   tensorboard_path = os.path.join(root_logging_path, 'tensorboard_logs', logging_filename)
   logging_path = os.path.join(root_logging_path, 'csv_logs', logging_filename)
@@ -124,17 +112,15 @@ if len(sys.argv) > 4:
     init_epoch = int(sys.argv[5])
 
 if model_file != '':
-  model = keras.models.load_model(model_file)
+  model = tf.keras.models.load_model(model_file)
 else:
-  # Build keras model
-  with tf.device("/gpu:0"):
+  with tf.device('/gpu:0'):
     #Change model as needed
     model = build_resnet([input_width, n_input_series, subsequences_per_input], 96, num_outputs)
-  model.summary()
-  # Compile model
-  model.compile(loss=loss_function,
-                optimizer=optimizer)
-  model.summary()
+    # Compile model
+    model.compile(loss=loss_function,
+                  optimizer=optimizer)
+    model.summary()
 
 
 if training:
@@ -154,13 +140,13 @@ if training:
   print('Validation size: ' + str(len(valid_gen) * batch_size))
   save_path = os.path.join(model_path,'weights.{epoch:02d}-{loss:.5f}.hdf5')
   # Checkpoint function for saving and logging progress
-  checkpoint = keras.callbacks.ModelCheckpoint(save_path, monitor='val_loss', verbose=0, save_best_only=False, save_weights_only=False, mode='auto', period=1)
+  checkpoint = tf.keras.callbacks.ModelCheckpoint(save_path, monitor='val_loss', verbose=0, save_best_only=False, save_weights_only=False, mode='auto', save_freq='epoch')
   # Function for logging progress to tensorboard
   tensorb = LRTensorBoard(log_dir=tensorboard_path)
   # Function for logging progress to CSV 
-  logging = keras.callbacks.CSVLogger(logging_path)
+  logging = tf.keras.callbacks.CSVLogger(logging_path)
   # Train model
-  hist = model.fit_generator(train_gen, workers=6, use_multiprocessing=True, validation_data=valid_gen, shuffle=shuffle, epochs=nb_epochs,verbose=1, initial_epoch=init_epoch, callbacks=[checkpoint, tensorb, logging]) 
+  hist = model.fit(train_gen, workers=6, use_multiprocessing=True, validation_data=valid_gen, shuffle=shuffle, epochs=nb_epochs,verbose=1, initial_epoch=init_epoch, callbacks=[checkpoint, tensorb, logging]) 
 
 if predicting:
   # Load testing data
